@@ -160,58 +160,68 @@ class KipAppAutomation:
                     f"Progres='{prg}' | LH='{lh}' | Tgl='{tgl}'"
                 )
 
-    def _start_driver(self):
-        self.log("info", "Memulai browser Chrome (mode anti-deteksi)…")
+def _start_driver(self):
+    import os
+    self.log("info", "Memulai browser Chrome…")
 
-        opts = Options()
-        opts.add_argument("--start-maximized")
-        opts.add_argument("--disable-notifications")
-        opts.add_argument("--disable-popup-blocking")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-infobars")
-        opts.add_argument("--disable-browser-side-navigation")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--remote-debugging-port=0")
-        opts.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        )
-        opts.add_experimental_option(
-            "excludeSwitches", ["enable-logging", "enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
+    opts = Options()
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--disable-notifications")
+    opts.add_argument("--disable-popup-blocking")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-infobars")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    )
+    opts.add_experimental_option(
+        "excludeSwitches", ["enable-logging", "enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
 
-        # ── Pilih ChromeDriver: webdriver-manager (auto-match versi) atau Selenium Manager
+    # Deteksi environment: Linux server vs Windows lokal
+    if os.path.exists("/usr/bin/chromium"):
+        # Streamlit Cloud / Linux — gunakan Chromium sistem
+        self.log("info", "Mode server Linux (Chromium)…")
+        opts.add_argument("--headless=new")
+        opts.binary_location = "/usr/bin/chromium"
+        from selenium.webdriver.chrome.service import Service
+        service = Service("/usr/bin/chromedriver")
+        self.driver = webdriver.Chrome(service=service, options=opts)
+    elif os.path.exists("/usr/bin/google-chrome"):
+        # Render / Railway
+        self.log("info", "Mode server Linux (Chrome)…")
+        opts.add_argument("--headless=new")
+        from selenium.webdriver.chrome.service import Service
+        service = Service("/usr/bin/chromedriver")
+        self.driver = webdriver.Chrome(service=service, options=opts)
+    else:
+        # Lokal Windows/Mac — webdriver-manager otomatis
+        self.log("info", "Mode lokal — webdriver-manager…")
         if HAS_WDM:
-            self.log("info", "Menggunakan webdriver-manager untuk mencocokkan versi ChromeDriver…")
-            try:
-                service = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=service, options=opts)
-                self.log("success", "ChromeDriver berhasil dimuat via webdriver-manager.")
-            except Exception as e:
-                self.log("warning", f"webdriver-manager gagal ({e}), fallback ke Selenium Manager…")
-                self.driver = webdriver.Chrome(options=opts)
+            from webdriver_manager.chrome import ChromeDriverManager
+            from selenium.webdriver.chrome.service import Service
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=opts)
         else:
-            self.log("info", "webdriver-manager tidak tersedia, menggunakan Selenium Manager bawaan…")
             self.driver = webdriver.Chrome(options=opts)
 
-        # ── Hapus fingerprint automation via CDP ──────────────────────────
-        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['id-ID', 'id', 'en-US', 'en'] });
-                window.chrome = { runtime: {} };
-            """
-        })
-
-        # ── Set timeout browser ───────────────────────────────────────────
-        self.driver.set_page_load_timeout(60)
-        self.driver.set_script_timeout(30)
-
-        self.log("success", "Browser berhasil dibuka (anti-deteksi aktif).")
+    self.driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
+            Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});
+            Object.defineProperty(navigator,'languages',
+                {get:()=>['id-ID','id','en-US','en']});
+            window.chrome = { runtime: {} };
+        """
+    })
+    self.driver.set_page_load_timeout(60)
+    self.driver.set_script_timeout(30)
+    self.log("success", "Browser berhasil dibuka.")
 
     # ── Low-level helpers ─────────────────────────────────────────────────
 
