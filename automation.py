@@ -538,11 +538,21 @@ class KipAppAutomation:
     def _step1_login(self):
         self.log("info", "Membuka kipapp.bps.go.id…")
         self.driver.get(BASE_URL)
-        self._sleep(2)
+        self._sleep(3)
 
         # 1. Klik tombol Login SSO
         self.log("info", "Klik tombol Login SSO…")
-        self._click_xpath("/html/body/div/div/div/div/div/div/div[2]/div/button")
+        try:
+            self._click_xpath("/html/body/div/div/div/div/div/div/div[2]/div/button")
+        except TimeoutException:
+            self.log("error",
+                "  Tombol Login SSO tidak ditemukan/tidak bisa diklik dalam "
+                f"{TIMEOUT} detik. Kemungkinan: (a) halaman butuh waktu lebih "
+                "lama untuk render di lingkungan ini, atau (b) situs mendeteksi "
+                "browser headless dan menampilkan halaman berbeda (blank/blokir) "
+                "alih-alih form login asli.")
+            self._debug_dump("step1_login_sso_button_not_found")
+            raise
         self._sleep(2)
 
         # 2. Isi Username
