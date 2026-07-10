@@ -7,9 +7,11 @@ Semua XPath disesuaikan dengan struktur DOM aktual situs.
 import time
 import re
 import random
+import shutil
 import threading
 from collections import defaultdict
 from datetime import date
+from pathlib import Path
 from typing import Callable
 
 from selenium import webdriver
@@ -164,15 +166,41 @@ class KipAppAutomation:
         self.log("info", "Memulai browser Chrome (mode anti-deteksi)…")
 
         opts = Options()
-        opts.add_argument("--start-maximized")
+
+        # ── Deteksi lingkungan: container Linux headless (mis. Streamlit
+        # Cloud, via packages.txt yang menginstal `chromium`/`chromium-driver`)
+        # vs komputer lokal (Windows/Mac) dengan Chrome asli yang bisa
+        # ditampilkan. Tidak ada display di container, jadi Chrome WAJIB
+        # dijalankan headless di sana atau ia langsung crash saat start.
+        _chromium_binary_candidates = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+        ]
+        chromium_binary = next(
+            (p for p in _chromium_binary_candidates if Path(p).exists()), None)
+        headless_container = chromium_binary is not None
+
+        if headless_container:
+            self.log("info",
+                f"Chromium terdeteksi di {chromium_binary} — menjalankan mode headless (container/cloud).")
+            opts.binary_location = chromium_binary
+            opts.add_argument("--headless=new")
+            opts.add_argument("--window-size=1920,1080")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+        else:
+            opts.add_argument("--start-maximized")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+
         opts.add_argument("--disable-notifications")
         opts.add_argument("--disable-popup-blocking")
         opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-infobars")
         opts.add_argument("--disable-browser-side-navigation")
-        opts.add_argument("--disable-gpu")
         opts.add_argument("--remote-debugging-port=0")
         opts.add_argument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -183,8 +211,20 @@ class KipAppAutomation:
             "excludeSwitches", ["enable-logging", "enable-automation"])
         opts.add_experimental_option("useAutomationExtension", False)
 
-        # ── Pilih ChromeDriver: webdriver-manager (auto-match versi) atau Selenium Manager
-        if HAS_WDM:
+        # ── Pilih ChromeDriver: cocokkan dengan binary chromium sistem jika
+        # ada (container), atau webdriver-manager / Selenium Manager (lokal).
+        if headless_container:
+            chromedriver_path = (shutil.which("chromedriver")
+                                  or "/usr/bin/chromedriver"
+                                  or "/usr/lib/chromium/chromedriver")
+            if chromedriver_path and Path(chromedriver_path).exists():
+                self.log("info", f"Menggunakan chromedriver sistem: {chromedriver_path}")
+                service = Service(chromedriver_path)
+                self.driver = webdriver.Chrome(service=service, options=opts)
+            else:
+                self.log("warning", "chromedriver sistem tidak ditemukan, mencoba Selenium Manager…")
+                self.driver = webdriver.Chrome(options=opts)
+        elif HAS_WDM:
             self.log("info", "Menggunakan webdriver-manager untuk mencocokkan versi ChromeDriver…")
             try:
                 service = Service(ChromeDriverManager().install())
