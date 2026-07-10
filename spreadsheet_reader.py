@@ -292,6 +292,17 @@ def _rows_from_xlsx(path: str, log_fn=None) -> list[dict[str, Any]]:
     return result
 
 
+def _safe_path_exists(candidate: str) -> bool:
+    """Path(...).exists() bisa melempar OSError di Windows untuk string
+    yang bukan path filesystem valid (mis. URL seperti 'https://...') —
+    karena karakter ':' dianggap tidak valid di posisi selain drive letter.
+    Bungkus supaya URL tetap jatuh ke cabang unduhan CSV, bukan crash."""
+    try:
+        return Path(candidate).exists()
+    except OSError:
+        return False
+
+
 def load_spreadsheet(url_or_path: str,
                      log_fn=None) -> list[dict[str, Any]]:
     """
@@ -318,7 +329,7 @@ def load_spreadsheet(url_or_path: str,
         _log("info", f"Membaca file Excel: {url_or_path}")
         rows = _rows_from_xlsx(url_or_path, log_fn=log_fn)
 
-    elif url_or_path.lower().endswith(".csv") or Path(url_or_path).exists():
+    elif url_or_path.lower().endswith(".csv") or _safe_path_exists(url_or_path):
         _log("info", f"Membaca file CSV: {url_or_path}")
         with open(url_or_path, encoding="utf-8-sig") as f:
             rows = _rows_from_csv_text(f.read(), log_fn=log_fn)
