@@ -179,40 +179,51 @@ div.stButton > button:not([kind="primary"]){
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-# ── Session state bootstrap ───────────────────────────────────────────────
+# ── Thread-safe state bridge ───────────────────────────────────────────────
+# IMPORTANT: st.session_state may ONLY be read/written from the main
+# Streamlit script thread. The background automation thread must never
+# touch it directly (that's what caused the KeyError/AttributeError
+# crashes). Instead, all state shared between the main thread and the
+# background thread lives on this plain object, which has no such
+# restriction. The main thread copies values it needs into/out of
+# st.session_state; the background thread reads/writes the bridge only.
+
+class _Bridge:
+    def __init__(self):
+        self.log_queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.otp_event = threading.Event()
+        self.otp_value = ""
+        self.otp_needed = False
+        self.status = "idle"
+        self.automation = None
+        self.running = False
+
 
 def _init_state():
-    defaults = {
-        "log_queue": queue.Queue(),
-        "logs": [],
-        "automation": None,
-        "stop_event": threading.Event(),
-        "otp_event": threading.Event(),
-        "otp_value": "",
-        "otp_needed": False,
-        "running": False,
-        "status": "idle",
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+    if "bridge" not in st.session_state:
+        st.session_state.bridge = _Bridge()
+    if "logs" not in st.session_state:
+        st.session_state.logs = []
 
 
 _init_state()
+bridge = st.session_state.bridge  # local reference, safe to hand to the thread
 
 
 def log_fn(level: str, message: str):
-    st.session_state.log_queue.put((level, message, time.strftime("%H:%M:%S")))
+    # Runs on the background thread too -> only touches `bridge`, never st.session_state.
+    bridge.log_queue.put((level, message, time.strftime("%H:%M:%S")))
 
 
 def request_otp_fn() -> str:
     """Dipanggil dari thread automation ketika OTP dibutuhkan."""
     log_fn("warning", "⚠ Dibutuhkan OTP. Isi kode OTP di panel kiri lalu klik Submit.")
-    st.session_state.otp_event.clear()
-    st.session_state.otp_needed = True
-    st.session_state.otp_event.wait()
-    st.session_state.otp_needed = False
-    return st.session_state.otp_value
+    bridge.otp_event.clear()
+    bridge.otp_needed = True
+    bridge.otp_event.wait()
+    bridge.otp_needed = False
+    return bridge.otp_value
 
 
 def run_automation(username, password, sheet_url, period):
@@ -224,26 +235,26 @@ def run_automation(username, password, sheet_url, period):
             period=period,
             log_fn=log_fn,
             request_otp_fn=request_otp_fn,
-            stop_event=st.session_state.stop_event,
+            stop_event=bridge.stop_event,
         )
-        st.session_state.automation = automation
+        bridge.automation = automation
         automation.run()
         log_fn("success", "✔ Otomasi selesai.")
-        st.session_state.status = "done"
+        bridge.status = "done"
     except AutomationStopped:
         log_fn("warning", "⏹ Otomasi dihentikan oleh pengguna.")
-        st.session_state.status = "stopped"
+        bridge.status = "stopped"
     except Exception as exc:
         log_fn("error", f"✘ Error: {exc}")
-        st.session_state.status = "error"
+        bridge.status = "error"
     finally:
-        st.session_state.running = False
+        bridge.running = False
 
 
-# ── Drain log queue into persistent list ──────────────────────────────────
+# ── Drain log queue into persistent list (main thread only) ───────────────
 while True:
     try:
-        level, msg, ts = st.session_state.log_queue.get_nowait()
+        level, msg, ts = bridge.log_queue.get_nowait()
         st.session_state.logs.append((level, msg, ts))
     except queue.Empty:
         break
@@ -260,8 +271,8 @@ st.markdown(f"""
     <h1>◆ KipApp Automation Console</h1>
     <div class="tag">SE2026 · Periodik &amp; Pelaksanaan Kinerja Data Entry</div>
   </div>
-  <div class="beacon {st.session_state.status}">
-    <span class="dot"></span> {STATUS_LABEL.get(st.session_state.status, 'Idle')}
+  <div class="beacon {bridge.status}">
+    <span class="dot"></span> {STATUS_LABEL.get(bridge.status, 'Idle')}
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -285,20 +296,20 @@ with col_form:
 
     c1, c2 = st.columns(2)
     run_clicked = c1.button("▶ Jalankan Otomasi", type="primary",
-                             disabled=st.session_state.running, use_container_width=True)
-    stop_clicked = c2.button("⏹ Stop", disabled=not st.session_state.running,
+                             disabled=bridge.running, use_container_width=True)
+    stop_clicked = c2.button("⏹ Stop", disabled=not bridge.running,
                               use_container_width=True)
 
     st.markdown('<div class="panel"><h3><span class="idx">02</span> Verifikasi OTP</h3>', unsafe_allow_html=True)
-    if st.session_state.otp_needed:
+    if bridge.otp_needed:
         st.markdown('<div class="otp-banner">⚠ Login membutuhkan OTP — masukkan kode lalu klik Submit.</div>',
                     unsafe_allow_html=True)
         otp_col1, otp_col2 = st.columns([2, 1])
         otp_input = otp_col1.text_input("Kode OTP", key="in_otp", label_visibility="collapsed",
                                          placeholder="Masukkan 6 digit OTP")
         if otp_col2.button("Submit OTP", type="primary", use_container_width=True):
-            st.session_state.otp_value = otp_input.strip()
-            st.session_state.otp_event.set()
+            bridge.otp_value = otp_input.strip()
+            bridge.otp_event.set()
     else:
         st.caption("Tombol OTP aktif otomatis saat proses login membutuhkannya.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -323,15 +334,15 @@ with col_log:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Actions ─────────────────────────────────────────────────────────────────
-if run_clicked and not st.session_state.running:
+if run_clicked and not bridge.running:
     if not username or not password:
         st.error("Username dan password wajib diisi.")
     elif not sheet_url:
         st.error("Tautan spreadsheet wajib diisi.")
     else:
-        st.session_state.running = True
-        st.session_state.status = "running"
-        st.session_state.stop_event.clear()
+        bridge.running = True
+        bridge.status = "running"
+        bridge.stop_event.clear()
         st.session_state.logs = []
         log_fn("info", f"Memulai otomasi — Periode: {period}")
         thread = threading.Thread(
@@ -339,13 +350,13 @@ if run_clicked and not st.session_state.running:
         thread.start()
         st.rerun()
 
-if stop_clicked and st.session_state.automation:
+if stop_clicked and bridge.automation:
     log_fn("warning", "Menghentikan otomasi…")
-    threading.Thread(target=st.session_state.automation.request_stop, daemon=True).start()
-    st.session_state.otp_event.set()  # lepaskan blocking OTP jika sedang menunggu
+    threading.Thread(target=bridge.automation.request_stop, daemon=True).start()
+    bridge.otp_event.set()  # lepaskan blocking OTP jika sedang menunggu
     st.rerun()
 
 # ── Auto-refresh while a run is active ──────────────────────────────────────
-if st.session_state.running:
+if bridge.running:
     time.sleep(1.0)
     st.rerun()
